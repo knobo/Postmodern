@@ -42,7 +42,6 @@
 
 (test dao-class
   (with-test-connection
-    (query (:drop-table :if-exists 'dao-test :cascade))
     (execute (dao-table-definition 'test-data))
     (protect
       (is (member :dao-test (list-tables)))
@@ -63,11 +62,11 @@
             (is (eq (test-b database-dao) nil))
             (delete-dao dao))))
       (is (not (select-dao 'test-data)))
-      (execute (:drop-table 'dao-test)))))
+      (execute (:drop-table 'dao-test :cascade)))))
 
 (test save-dao
   (with-test-connection
-    (query (:drop-table :if-exists 'dao-test :cascade))
+    (query (:drop-table :if-exists 'test-data :cascade))
     (execute (dao-table-definition 'test-data))
     (protect
       (let ((dao (make-instance 'test-data :a "quux")))
@@ -198,15 +197,22 @@
   (with-test-connection
     (unless (pomo:table-exists-p 'dao-test)
       (execute (dao-table-definition 'test-data)))
-  (let ((item (make-instance 'test-data :a "Sabra" :b t :c 0)))
-    (save-dao item)
-    (loop for x from 1 to 5 do
-         (bt:make-thread
-          (lambda ()
-            (with-test-connection
-            (loop repeat 10 do (bt:with-lock-held (*dao-update-lock*) (incf (test-c item) 1)) (save-dao item))
-            (loop repeat 10 do (bt:with-lock-held (*dao-update-lock*) (decf (test-c item) 1)) (save-dao item))))))
-    (is (eq 0 (test-c item))))))
-
-;;; Note that if you drop the table at the end of a thread test, it is almost certain that threads are still running.
-;;; As a result, the subsequent attempts to save-dao will fail. So do not
+    (let ((item (make-instance 'test-data :a "test-name" :b t :c 0))
+          (threads '()))
+      (save-dao item)
+      (loop for x from 1 to 5
+            do (push (bt:make-thread
+                      (lambda ()
+                        (with-test-connection
+                          (loop repeat 10
+                                do (bt:with-lock-held (*dao-update-lock*)
+                                     (incf (test-c item) 1))
+                                   (save-dao item))
+                          (loop repeat 10
+                                do (bt:with-lock-held (*dao-update-lock*)
+                                     (decf (test-c item) 1))
+                                   (save-dao item)))))
+                     threads))
+      (mapc #'bt:join-thread threads)
+      (is (eq 0 (test-c item))))
+    (execute (:drop-table 'dao-test :cascade))))
